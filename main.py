@@ -85,7 +85,7 @@ bot.category = None
 bot.log_channel = None
 bot.app_open_time = {}
 
-# ---------- Модальное окно с ОДНИМ полем ----------
+# ---------- Модальное окно с ОДНИМ полем + ОТЛАДКА ----------
 class ApplicationModal(discord.ui.Modal, title='📝 Заявка в группировку'):
     group_name = discord.ui.TextInput(
         label='Название группировки',
@@ -110,7 +110,7 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             guild = interaction.guild
             category = bot.category
             if not category:
-                await interaction.followup.send("❌ Категория не найдена.", ephemeral=True)
+                await interaction.followup.send("❌ Категория не найдена. Проверьте ID категории в настройках.", ephemeral=True)
                 return
 
             # Проверка существующей заявки
@@ -126,7 +126,7 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 if role:
                     support_roles.append(role)
             if not support_roles:
-                await interaction.followup.send("❌ Ни одна из ролей поддержки не найдена.", ephemeral=True)
+                await interaction.followup.send("❌ Ни одна из ролей поддержки не найдена. Проверьте ID ролей в коде.", ephemeral=True)
                 return
 
             # Номер заявки
@@ -202,9 +202,33 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
 
             await interaction.followup.send(f"✅ Заявка отправлена! Перейдите в {channel.mention}", ephemeral=True)
 
+        except discord.Forbidden:
+            await interaction.followup.send("❌ У бота недостаточно прав для создания канала. Проверьте права.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Ошибка Discord: {e.text if hasattr(e, 'text') else str(e)}", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send("❌ Ошибка при создании заявки.", ephemeral=True)
-            print(f"Ошибка в _handle: {e}")
+            # Подробная ошибка для отладки
+            await interaction.followup.send(f"❌ Ошибка: {type(e).__name__}: {str(e)}", ephemeral=True)
+            print(f"Ошибка в _handle: {type(e).__name__}: {e}")
+
+    # --- Добавляем обработчик ошибок модального окна ---
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        """Перехватывает ошибки до вызова defer."""
+        try:
+            await interaction.response.send_message(
+                f"❌ Критическая ошибка в модальном окне: {type(error).__name__}: {error}",
+                ephemeral=True
+            )
+        except:
+            # Если response уже отправлен, пробуем followup
+            try:
+                await interaction.followup.send(
+                    f"❌ Критическая ошибка: {type(error).__name__}: {error}",
+                    ephemeral=True
+                )
+            except:
+                pass
+        print(f"Ошибка в on_error: {type(error).__name__}: {error}")
 
 # ---------- Кнопка "Подать заявку" ----------
 class ApplyButton(discord.ui.Button):
@@ -391,13 +415,15 @@ async def on_ready():
         else:
             print(f"⚠️ Роль с ID {role_id} не найдена.")
 
-    if not bot.category: print(f"⚠️ Категория {CATEGORY_ID} не найдена.")
-    if not bot.log_channel: print(f"⚠️ Лог-канал {LOG_CHANNEL_ID} не найден.")
+    if not bot.category:
+        print(f"⚠️ Категория {CATEGORY_ID} не найдена. Проверьте ID.")
+    if not bot.log_channel:
+        print(f"⚠️ Лог-канал {LOG_CHANNEL_ID} не найден.")
 
     try:
         if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            synced = await bot.tree.sync(guild=guild)
+            guild_obj = discord.Object(id=GUILD_ID)
+            synced = await bot.tree.sync(guild=guild_obj)
             print(f"🔄 Синхронизировано {len(synced)} команд для сервера {GUILD_ID}")
         else:
             synced = await bot.tree.sync()
