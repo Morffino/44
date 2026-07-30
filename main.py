@@ -17,7 +17,7 @@ GUILD_ID = int(os.getenv('GUILD_ID', 0))
 CATEGORY_ID = 1529178033100165324
 LOG_CHANNEL_ID = 1532376168173404170
 
-# --- Роли поддержки (старые) ---
+# Роли поддержки (старые)
 ALL_SUPPORT_ROLE_IDS = [
     1529252048883810485,
     1529253808666841302,
@@ -25,11 +25,7 @@ ALL_SUPPORT_ROLE_IDS = [
     1529254103820275823
 ]
 
-# --- Роли лидера и зама ---
-LEADER_ROLE_ID = 1532465679037366422
-DEPUTY_ROLE_ID = 1532465748746833941
-
-# --- Сопоставление группировок и ID их ролей ---
+# Сопоставление группировок и ID их ролей (для добавления в канал на чтение)
 GROUP_ROLE_IDS = {
     "Свобода": 1529254394908905576,
     "Нейтралы": 1529254524584329286,
@@ -121,7 +117,6 @@ class ConfirmCloseModal(discord.ui.Modal, title='Подтверждение за
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Проверяем, что пользователь может закрыть заявку (создатель или админ)
         channel = interaction.channel
         if not channel.category or channel.category.id != CATEGORY_ID:
             await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
@@ -133,19 +128,17 @@ class ConfirmCloseModal(discord.ui.Modal, title='Подтверждение за
             return
         creator_id = int(creator_id)
 
-        # Проверяем роли поддержки
+        # Проверка прав: только создатель или поддержка
         has_support_role = False
         for role_id in ALL_SUPPORT_ROLE_IDS:
             if interaction.user.get_role(role_id):
                 has_support_role = True
                 break
 
-        # Проверяем, что пользователь – создатель или имеет роль поддержки
         if interaction.user.id != creator_id and not has_support_role:
             await interaction.response.send_message("⛔ У вас нет прав на закрытие этой заявки.", ephemeral=True)
             return
 
-        # Отвечаем сразу, чтобы не было тайм-аута
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -225,7 +218,6 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 await interaction.followup.send(f"⚠️ У вас уже есть заявка: {existing.mention}", ephemeral=True)
                 return
 
-            # Проверяем роли поддержки
             support_roles = []
             for role_id in ALL_SUPPORT_ROLE_IDS:
                 role = guild.get_role(role_id)
@@ -242,30 +234,22 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
 
             channel_name = f"заявка-{interaction.user.name.lower()}-{current_number}"
 
-            # Права доступа
+            # Настройка прав доступа
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
             }
 
-            # Добавляем роли поддержки
+            # Роли поддержки – могут читать и писать
             for role in support_roles:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-            # Добавляем роль группировки (только чтение)
+            # Роль группировки – только чтение
             group_role_id = GROUP_ROLE_IDS.get(group)
             if group_role_id:
                 group_role = guild.get_role(group_role_id)
                 if group_role:
                     overwrites[group_role] = discord.PermissionOverwrite(view_channel=True, send_messages=False)
-
-            # Добавляем роли лидера и зама (чтение + отправка)
-            leader_role = guild.get_role(LEADER_ROLE_ID)
-            if leader_role:
-                overwrites[leader_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-            deputy_role = guild.get_role(DEPUTY_ROLE_ID)
-            if deputy_role:
-                overwrites[deputy_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
             channel = await guild.create_text_channel(
                 name=channel_name,
@@ -301,10 +285,11 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             )
             await channel.send(instruction)
 
-            # Новая кнопка закрытия с подтверждением
+            # --- Две кнопки закрытия ---
             close_view = discord.ui.View()
-            close_view.add_item(CloseApplicationButton())
-            await channel.send("🔒 Кнопка закрытия заявки (доступна создателю и администрации):", view=close_view)
+            close_view.add_item(CloseForCreatorButton())  # для создателя
+            close_view.add_item(CloseForAdminButton())    # для админов
+            await channel.send("🔒 Кнопки закрытия заявки:", view=close_view)
 
             log_channel = bot.log_channel
             if log_channel:
@@ -353,13 +338,40 @@ class ApplyButton(discord.ui.Button):
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
 
-# ---------- Кнопка закрытия с подтверждением ----------
-class CloseApplicationButton(discord.ui.Button):
+# ---------- Кнопка закрытия для создателя ----------
+class CloseForCreatorButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="Закрыть заявку", style=discord.ButtonStyle.danger, custom_id="close_application")
+        super().__init__(label="🔒 Закрыть (создатель)", style=discord.ButtonStyle.secondary, custom_id="close_creator")
 
     async def callback(self, interaction: discord.Interaction):
-        # Открываем модальное окно подтверждения
+        # Проверяем, что пользователь – создатель канала
+        channel = interaction.channel
+        creator_id = channel.topic
+        if creator_id is None:
+            await interaction.response.send_message("❌ Не удалось определить создателя.", ephemeral=True)
+            return
+        creator_id = int(creator_id)
+        if interaction.user.id != creator_id:
+            await interaction.response.send_message("❌ Эта кнопка только для создателя заявки.", ephemeral=True)
+            return
+        modal = ConfirmCloseModal()
+        await interaction.response.send_modal(modal)
+
+# ---------- Кнопка закрытия для админов ----------
+class CloseForAdminButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🔒 Закрыть (админ)", style=discord.ButtonStyle.danger, custom_id="close_admin")
+
+    async def callback(self, interaction: discord.Interaction):
+        # Проверяем, есть ли у пользователя роль поддержки
+        has_support_role = False
+        for role_id in ALL_SUPPORT_ROLE_IDS:
+            if interaction.user.get_role(role_id):
+                has_support_role = True
+                break
+        if not has_support_role:
+            await interaction.response.send_message("⛔ У вас нет прав администратора.", ephemeral=True)
+            return
         modal = ConfirmCloseModal()
         await interaction.response.send_modal(modal)
 
@@ -387,8 +399,6 @@ async def setup(interaction: discord.Interaction):
 
 @bot.tree.command(name="close", description="Быстро закрыть текущий канал заявки (без подтверждения)")
 async def close_application(interaction: discord.Interaction):
-    # Этот метод оставлен для администраторов, если нужно быстро закрыть без подтверждения
-    # Но лучше использовать кнопку с подтверждением
     channel = interaction.channel
     if not channel.category or channel.category.id != CATEGORY_ID:
         await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
@@ -510,7 +520,6 @@ async def on_ready():
         else:
             print(f"⚠️ Роль поддержки с ID {role_id} не найдена.")
 
-    # Проверяем роли группировок
     for group, role_id in GROUP_ROLE_IDS.items():
         role = guild.get_role(role_id)
         if role:
