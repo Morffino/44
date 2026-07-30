@@ -10,15 +10,23 @@ from aiohttp import web
 
 load_dotenv()
 
-# ---------- Конфигурация ----------
-TOKEN = os.getenv('DISCORD_TOKEN')
-CATEGORY_ID = int(os.getenv('CATEGORY_ID', 0))
-ADMIN_ROLE_ID = int(os.getenv('ADMIN_ROLE_ID', 0))
+# ---------- Безопасное чтение переменных ----------
+def get_int_env(var_name: str, default: int = 0) -> int:
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
+    # Если строка содержит не только цифры (например, 'ID_роли_администратора'), возвращаем default
+    return default
 
-# --- Лог-канал задан напрямую ---
+TOKEN = os.getenv('DISCORD_TOKEN')
+CATEGORY_ID = get_int_env('CATEGORY_ID')
+ADMIN_ROLE_ID = get_int_env('ADMIN_ROLE_ID')
+# LOG_CHANNEL_ID теперь жёстко задан в коде
 LOG_CHANNEL_ID = 1532376168173404170
 
-# Проверка обязательных переменных
 if not TOKEN or CATEGORY_ID == 0:
     print("❌ Ошибка: не заданы DISCORD_TOKEN и CATEGORY_ID")
     sys.exit(1)
@@ -46,7 +54,7 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# ---------- Модальное окно для заявки ----------
+# ---------- Модальное окно ----------
 class ApplicationModal(discord.ui.Modal, title='📝 Заявка в группировку'):
     age = discord.ui.TextInput(
         label='Ваш реальный возраст',
@@ -87,12 +95,12 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
         guild = interaction.guild
         category = bot.get_channel(CATEGORY_ID)
         if not category:
-            await interaction.response.send_message("❌ Категория не найдена. Обратитесь к администратору.", ephemeral=True)
+            await interaction.response.send_message("❌ Категория не найдена.", ephemeral=True)
             return
 
         existing = discord.utils.get(category.channels, topic=str(interaction.user.id))
         if existing:
-            await interaction.response.send_message(f"⚠️ У вас уже есть открытая заявка: {existing.mention}", ephemeral=True)
+            await interaction.response.send_message(f"⚠️ У вас уже есть заявка: {existing.mention}", ephemeral=True)
             return
 
         async with counter_lock:
@@ -118,7 +126,7 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 topic=str(interaction.user.id)
             )
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка создания канала: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -140,7 +148,7 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
         close_view.add_item(CloseApplicationButton())
         await channel.send("🔒 Кнопка закрытия заявки (только для администрации):", view=close_view)
 
-        # --- Логирование в указанный канал ---
+        # Логирование
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             log_embed = discord.Embed(
@@ -152,68 +160,56 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             log_embed.add_field(name="Канал", value=channel.mention, inline=False)
             await log_channel.send(embed=log_embed)
 
-        await interaction.response.send_message(f"✅ Заявка отправлена! Перейдите в {channel.mention}", ephemeral=True)
+        await interaction.response.send_message(f"✅ Заявка отправлена! {channel.mention}", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        await interaction.response.send_message("❌ Ошибка при отправке заявки.", ephemeral=True)
-        print(f"Ошибка в модальном окне: {error}")
+        await interaction.response.send_message("❌ Ошибка при отправке.", ephemeral=True)
+        print(f"Ошибка: {error}")
 
-# ---------- Кнопка "Название группировок" ----------
+# ---------- Кнопки ----------
 class GroupButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="📝 Название группировок", style=discord.ButtonStyle.primary, custom_id="group_application")
-
     async def callback(self, interaction: discord.Interaction):
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
 
-# ---------- Кнопка закрытия заявки ----------
 class CloseApplicationButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Закрыть заявку", style=discord.ButtonStyle.danger, custom_id="close_application")
-
     async def callback(self, interaction: discord.Interaction):
         if ADMIN_ROLE_ID != 0:
             role = interaction.guild.get_role(ADMIN_ROLE_ID)
             if not role or role not in interaction.user.roles:
-                await interaction.response.send_message("⛔ У вас нет прав закрывать заявку.", ephemeral=True)
+                await interaction.response.send_message("⛔ У вас нет прав.", ephemeral=True)
                 return
-
         channel = interaction.channel
         if not channel.category or channel.category.id != CATEGORY_ID:
-            await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
+            await interaction.response.send_message("❌ Не канал заявки.", ephemeral=True)
             return
-
-        await interaction.response.send_message("⏳ Заявка закрывается...", ephemeral=True)
-
+        await interaction.response.send_message("⏳ Закрытие...", ephemeral=True)
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"🔒 Заявка #{channel.name} закрыта администратором {interaction.user.mention}")
-
+            await log_channel.send(f"🔒 Заявка #{channel.name} закрыта {interaction.user.mention}")
         await channel.delete()
 
-# ---------- Представление с одной кнопкой ----------
 class ApplicationView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(GroupButton())
 
-# ---------- Команда /setup ----------
-@bot.tree.command(name="setup", description="Создать сообщение с кнопкой для подачи заявок")
+# ---------- Команды ----------
+@bot.tree.command(name="setup", description="Создать сообщение с кнопкой")
 @app_commands.default_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📋 Подача заявки в группировку",
-        description=(
-            "Нажмите на кнопку ниже, чтобы заполнить анкету.\n"
-            "После отправки заявки будет создан отдельный канал для рассмотрения."
-        ),
+        description="Нажмите на кнопку ниже, чтобы заполнить анкету.",
         color=discord.Color.blue()
     )
-    view = ApplicationView()
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, view=ApplicationView())
 
-# ---------- Веб-сервер для health check ----------
+# ---------- Веб-сервер ----------
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
@@ -227,19 +223,17 @@ async def start_web():
     print("🌐 Health check на порту 8080")
     await asyncio.Event().wait()
 
-# ---------- Событие готовности ----------
 @bot.event
 async def on_ready():
     global counter
     counter = load_counter()
-    print(f'✅ Бот {bot.user} запущен! Счётчик заявок: {counter}')
+    print(f'✅ Бот {bot.user} запущен! Счётчик: {counter}')
     try:
         synced = await bot.tree.sync()
         print(f"🔄 Синхронизировано {len(synced)} команд.")
     except Exception as e:
         print(f"⚠️ Ошибка синхронизации: {e}")
 
-# ---------- Запуск ----------
 async def main():
     asyncio.create_task(start_web())
     await bot.start(TOKEN)
