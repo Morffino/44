@@ -14,16 +14,40 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = int(os.getenv('GUILD_ID', 0))
 
+# --- ID категории и лог-канала (захардкожены) ---
 CATEGORY_ID = 1529178033100165324
 LOG_CHANNEL_ID = 1532376168173404170
 
-# --- Роли, которые могут закрывать заявки (новые ID) ---
+# --- Роли, которые могут закрывать заявки ---
 ALL_SUPPORT_ROLE_IDS = [
     1530150841158467627,
     1532362919138824245,
     1532376889065341032,
     1530956015955087534
 ]
+
+# --- Список допустимых группировок (точные названия) ---
+VALID_GROUPS = [
+    "Свобода",
+    "Нейтралы",
+    "Наёмники",
+    "Братки",
+    "Военные",
+    "ОКСОП",
+    "Долг",
+    "Монолит",
+    "Грех",
+    "Учёные",
+    "Охрана Деревни",
+    "Охрана Бара",
+    "Ренегаты",
+    "Чистое Небо",
+    "Амбрелла"
+]
+# Для быстрой проверки создаём множество в нижнем регистре
+VALID_GROUPS_LOWER = {g.lower() for g in VALID_GROUPS}
+# Словарь для восстановления оригинального написания
+GROUP_MAP = {g.lower(): g for g in VALID_GROUPS}
 
 if not TOKEN:
     print("❌ Ошибка: не задан DISCORD_TOKEN в .env")
@@ -85,11 +109,11 @@ bot.category = None
 bot.log_channel = None
 bot.app_open_time = {}
 
-# ---------- Модальное окно с ОДНИМ полем ----------
+# ---------- Модальное окно с проверкой группировки ----------
 class ApplicationModal(discord.ui.Modal, title='📝 Заявка в группировку'):
     group_name = discord.ui.TextInput(
         label='Название группировки',
-        placeholder='Введите название группировки',
+        placeholder='Введите точное название из списка (см. описание)',
         required=True,
         max_length=50
     )
@@ -101,10 +125,25 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
     async def _handle(self, interaction: discord.Interaction):
         global counter
         try:
-            group = self.group_name.value.strip()
-            if not group:
+            group_raw = self.group_name.value.strip()
+            if not group_raw:
                 await interaction.followup.send("❌ Название группировки не может быть пустым.", ephemeral=True)
                 return
+
+            # Проверка, что группировка есть в списке (без учёта регистра)
+            group_lower = group_raw.lower()
+            if group_lower not in VALID_GROUPS_LOWER:
+                # Формируем красивый список группировок для вывода
+                groups_list = "\n".join(VALID_GROUPS)
+                await interaction.followup.send(
+                    f"❌ Группировка **{group_raw}** не найдена.\n\n"
+                    f"Доступные группировки:\n{groups_list}",
+                    ephemeral=True
+                )
+                return
+
+            # Получаем оригинальное написание группировки
+            group = GROUP_MAP[group_lower]
 
             guild = interaction.guild
             category = bot.category
@@ -291,9 +330,14 @@ class ApplicationView(discord.ui.View):
 @bot.tree.command(name="setup", description="Создать сообщение с кнопкой для подачи заявок")
 @app_commands.default_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
+    # В embed выводим список группировок, чтобы пользователи знали
+    groups_text = "\n".join(VALID_GROUPS)
     embed = discord.Embed(
         title="📋 Подача заявки в группировку",
-        description="Нажмите на кнопку ниже, чтобы заполнить анкету.",
+        description=(
+            "Нажмите на кнопку ниже, чтобы заполнить анкету.\n\n"
+            "**Доступные группировки:**\n" + groups_text
+        ),
         color=discord.Color.blue()
     )
     view = ApplicationView()
@@ -371,7 +415,7 @@ async def on_message(message):
     await write_app_log(app_number, f"💬 {message.author}: {message.content}")
     await bot.process_commands(message)
 
-# ---------- Веб-сервер ----------
+# ---------- Веб-сервер для health check ----------
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
