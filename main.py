@@ -13,10 +13,9 @@ load_dotenv()
 # ---------- Конфигурация ----------
 TOKEN = os.getenv('DISCORD_TOKEN')
 CATEGORY_ID = int(os.getenv('CATEGORY_ID', 0))
-# Лог-канал можно задать через .env или захардкодить
-LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', 1532376168173404170))  # по умолчанию ваш ID
+LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', 1532376168173404170))
+GUILD_ID = int(os.getenv('GUILD_ID', 0))
 
-# Роли, которые могут закрывать заявки (укажите свои ID)
 SUPPORT_ROLE_ID = int(os.getenv('SUPPORT_ROLE_ID', 0))
 ADDITIONAL_SUPPORT_ROLE_IDS = [
     1529252048883810485,
@@ -30,7 +29,7 @@ if not TOKEN or CATEGORY_ID == 0:
     print("❌ Ошибка: не заданы DISCORD_TOKEN и CATEGORY_ID")
     sys.exit(1)
 
-# ---------- Счётчик заявок ----------
+# ---------- Счётчик ----------
 COUNTER_FILE = "data/application_counter.txt"
 os.makedirs("data", exist_ok=True)
 
@@ -86,55 +85,26 @@ bot.category = None
 bot.log_channel = None
 bot.app_open_time = {}
 
-# ---------- Модальное окно заявки ----------
+# ---------- Модальное окно с ОДНИМ полем ----------
 class ApplicationModal(discord.ui.Modal, title='📝 Заявка в группировку'):
-    age = discord.ui.TextInput(
-        label='Ваш реальный возраст',
-        placeholder='Например: 18',
+    group_name = discord.ui.TextInput(
+        label='Название группировки',
+        placeholder='Введите название группировки',
         required=True,
-        max_length=3
-    )
-    steam = discord.ui.TextInput(
-        label='SteamID64',
-        placeholder='Введите ваш SteamID64 (только цифры)',
-        required=True
-    )
-    experience = discord.ui.TextInput(
-        label='Опыт игры на RP-проектах по STALKER RP DayZ',
-        placeholder='Опишите свой опыт',
-        required=True,
-        style=discord.TextStyle.paragraph
-    )
-    hours = discord.ui.TextInput(
-        label='Сколько часов в DayZ',
-        placeholder='Например: 500+',
-        required=True
-    )
-    online = discord.ui.TextInput(
-        label='Ваш средний онлайн в день',
-        placeholder='Например: 4-6 часов',
-        required=True
-    )
-    groups = discord.ui.TextInput(
-        label='За какие группировки играли? / впервые на таком проекте',
-        placeholder='Перечислите группировки или напишите "впервые"',
-        required=True,
-        style=discord.TextStyle.paragraph
+        max_length=50
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Мгновенный ответ (defer)
         await interaction.response.defer(ephemeral=True)
         asyncio.create_task(self._handle(interaction))
 
     async def _handle(self, interaction: discord.Interaction):
         global counter
         try:
-            steam = self.steam.value.strip()
-            if not steam.isdigit():
-                await interaction.followup.send("❌ SteamID должен содержать только цифры.", ephemeral=True)
-                return
-            if len(steam) < 17 or len(steam) > 20:
-                await interaction.followup.send("❌ SteamID должен быть длиной от 17 до 20 цифр.", ephemeral=True)
+            group = self.group_name.value.strip()
+            if not group:
+                await interaction.followup.send("❌ Название группировки не может быть пустым.", ephemeral=True)
                 return
 
             guild = interaction.guild
@@ -143,26 +113,29 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 await interaction.followup.send("❌ Категория не найдена.", ephemeral=True)
                 return
 
+            # Проверка существующей заявки
             existing = discord.utils.get(category.channels, topic=str(interaction.user.id))
             if existing:
                 await interaction.followup.send(f"⚠️ У вас уже есть заявка: {existing.mention}", ephemeral=True)
                 return
 
+            # Роли поддержки
             support_roles = []
             for role_id in ALL_SUPPORT_ROLE_IDS:
                 role = guild.get_role(role_id)
                 if role:
                     support_roles.append(role)
-
             if not support_roles:
                 await interaction.followup.send("❌ Ни одна из ролей поддержки не найдена.", ephemeral=True)
                 return
 
+            # Номер заявки
             async with counter_lock:
                 current_number = counter
                 counter += 1
                 save_counter(counter)
 
+            # Создаём канал
             channel_name = f"заявка-{interaction.user.name.lower()}-{current_number}"
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -180,34 +153,41 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
 
             bot.app_open_time[current_number] = datetime.now()
 
+            # Логируем открытие
             await write_app_log(current_number, f"🟢 ЗАЯВКА ОТКРЫТА")
             await write_app_log(current_number, f"   Пользователь: {interaction.user}")
-            await write_app_log(current_number, f"   Возраст: {self.age.value}")
-            await write_app_log(current_number, f"   SteamID64: {steam}")
-            await write_app_log(current_number, f"   Опыт RP: {self.experience.value}")
-            await write_app_log(current_number, f"   Часы в DayZ: {self.hours.value}")
-            await write_app_log(current_number, f"   Онлайн: {self.online.value}")
-            await write_app_log(current_number, f"   Группировки: {self.groups.value}")
+            await write_app_log(current_number, f"   Группировка: {group}")
 
+            # Отправляем в канал информацию о группировке + просьбу дополнить
             embed = discord.Embed(
                 title=f"📋 Заявка #{current_number}",
                 color=discord.Color.green(),
                 timestamp=datetime.utcnow()
             )
-            embed.add_field(name="1. Реальный возраст", value=self.age.value, inline=False)
-            embed.add_field(name="2. SteamID64", value=steam, inline=False)
-            embed.add_field(name="3. Опыт RP", value=self.experience.value, inline=False)
-            embed.add_field(name="4. Часы в DayZ", value=self.hours.value, inline=False)
-            embed.add_field(name="5. Средний онлайн", value=self.online.value, inline=False)
-            embed.add_field(name="6. Группировки", value=self.groups.value, inline=False)
+            embed.add_field(name="Группировка", value=group, inline=False)
             embed.set_footer(text=f"От: {interaction.user.display_name}")
 
             await channel.send(embed=embed)
 
+            # Сообщение с просьбой написать остальные пункты
+            instruction = (
+                "**Теперь напишите в этом канале следующие пункты (каждый с новой строки):**\n"
+                "1. Ваш реальный возраст\n"
+                "2. SteamID64\n"
+                "3. Опыт игры на RP-проектах по STALKER RP DayZ\n"
+                "4. Сколько часов в DayZ\n"
+                "5. Ваш средний онлайн в день\n"
+                "6. За какие группировки играли? / впервые на таком проекте\n\n"
+                "Просто напишите ответы по порядку."
+            )
+            await channel.send(instruction)
+
+            # Кнопка закрытия
             close_view = discord.ui.View()
             close_view.add_item(CloseApplicationButton())
             await channel.send("🔒 Кнопка закрытия заявки (только для администрации):", view=close_view)
 
+            # Уведомление в лог-канал
             log_channel = bot.log_channel
             if log_channel:
                 log_embed = discord.Embed(
@@ -217,6 +197,7 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 log_embed.add_field(name="Номер", value=f"#{current_number}", inline=False)
                 log_embed.add_field(name="Пользователь", value=interaction.user.mention, inline=False)
                 log_embed.add_field(name="Канал", value=channel.mention, inline=False)
+                log_embed.add_field(name="Группировка", value=group, inline=False)
                 await log_channel.send(embed=log_embed)
 
             await interaction.followup.send(f"✅ Заявка отправлена! Перейдите в {channel.mention}", ephemeral=True)
@@ -234,7 +215,7 @@ class ApplyButton(discord.ui.Button):
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
 
-# ---------- Кнопка закрытия заявки ----------
+# ---------- Кнопка закрытия ----------
 class CloseApplicationButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Закрыть заявку", style=discord.ButtonStyle.danger, custom_id="close_application")
@@ -413,12 +394,11 @@ async def on_ready():
     if not bot.category: print(f"⚠️ Категория {CATEGORY_ID} не найдена.")
     if not bot.log_channel: print(f"⚠️ Лог-канал {LOG_CHANNEL_ID} не найден.")
 
-    guild_id = int(os.getenv('GUILD_ID', 0))
     try:
-        if guild_id:
-            guild = discord.Object(id=guild_id)
+        if GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
             synced = await bot.tree.sync(guild=guild)
-            print(f"🔄 Синхронизировано {len(synced)} команд для сервера {guild_id}")
+            print(f"🔄 Синхронизировано {len(synced)} команд для сервера {GUILD_ID}")
         else:
             synced = await bot.tree.sync()
             print(f"🔄 Синхронизировано {len(synced)} глобальных команд")
