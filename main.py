@@ -14,40 +14,42 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = int(os.getenv('GUILD_ID', 0))
 
-# --- ID категории и лог-канала (захардкожены) ---
 CATEGORY_ID = 1529178033100165324
 LOG_CHANNEL_ID = 1532376168173404170
 
-# --- Роли, которые могут закрывать заявки ---
+# --- Роли поддержки (старые) ---
 ALL_SUPPORT_ROLE_IDS = [
-    1530150841158467627,
-    1532362919138824245,
-    1532376889065341032,
-    1530956015955087534
+    1529252048883810485,
+    1529253808666841302,
+    1529253952850366616,
+    1529254103820275823
 ]
 
-# --- Список допустимых группировок (точные названия) ---
-VALID_GROUPS = [
-    "Свобода",
-    "Нейтралы",
-    "Наёмники",
-    "Братки",
-    "Военные",
-    "ОКСОП",
-    "Долг",
-    "Монолит",
-    "Грех",
-    "Учёные",
-    "Охрана Деревни",
-    "Охрана Бара",
-    "Ренегаты",
-    "Чистое Небо",
-    "Амбрелла"
-]
-# Для быстрой проверки создаём множество в нижнем регистре
-VALID_GROUPS_LOWER = {g.lower() for g in VALID_GROUPS}
-# Словарь для восстановления оригинального написания
-GROUP_MAP = {g.lower(): g for g in VALID_GROUPS}
+# --- Роли лидера и зама ---
+LEADER_ROLE_ID = 1532465679037366422
+DEPUTY_ROLE_ID = 1532465748746833941
+
+# --- Сопоставление группировок и ID их ролей ---
+GROUP_ROLE_IDS = {
+    "Свобода": 1529254394908905576,
+    "Нейтралы": 1529254524584329286,
+    "Наёмники": 1529254566988615901,
+    "Братки": 1529254606843154442,
+    "Военные": 1529254665768931460,
+    "ОКСОП": 1529254686060839092,
+    "Долг": 1529254754767605911,
+    "Монолит": 1529254797851623535,
+    "Грех": 1529254838804807791,
+    "Учёные": 1529254886963937321,
+    "Охрана Деревни": 1529255019969253427,
+    "Охрана Бара": 1529255117918830773,
+    "Ренегаты": 1529255157496545380,
+    "Чистое Небо": 1529255242758230156,
+    "Амбрелла": 1529256543164301432
+}
+
+VALID_GROUPS = list(GROUP_ROLE_IDS.keys())
+VALID_GROUPS_LOWER = {g.lower(): g for g in VALID_GROUPS}
 
 if not TOKEN:
     print("❌ Ошибка: не задан DISCORD_TOKEN в .env")
@@ -109,11 +111,81 @@ bot.category = None
 bot.log_channel = None
 bot.app_open_time = {}
 
-# ---------- Модальное окно с проверкой группировки ----------
+# ---------- Модальное окно подтверждения закрытия ----------
+class ConfirmCloseModal(discord.ui.Modal, title='Подтверждение закрытия заявки'):
+    reason = discord.ui.TextInput(
+        label='Причина закрытия (необязательно)',
+        placeholder='Укажите причину или оставьте пустым',
+        required=False,
+        max_length=200
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Проверяем, что пользователь может закрыть заявку (создатель или админ)
+        channel = interaction.channel
+        if not channel.category or channel.category.id != CATEGORY_ID:
+            await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
+            return
+
+        creator_id = channel.topic
+        if creator_id is None:
+            await interaction.response.send_message("❌ Не удалось определить создателя.", ephemeral=True)
+            return
+        creator_id = int(creator_id)
+
+        # Проверяем роли поддержки
+        has_support_role = False
+        for role_id in ALL_SUPPORT_ROLE_IDS:
+            if interaction.user.get_role(role_id):
+                has_support_role = True
+                break
+
+        # Проверяем, что пользователь – создатель или имеет роль поддержки
+        if interaction.user.id != creator_id and not has_support_role:
+            await interaction.response.send_message("⛔ У вас нет прав на закрытие этой заявки.", ephemeral=True)
+            return
+
+        # Отвечаем сразу, чтобы не было тайм-аута
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            app_number = int(channel.name.split('-')[-1])
+        except:
+            app_number = None
+
+        if app_number:
+            await write_app_log(app_number, f"🔴 ЗАЯВКА ЗАКРЫТА")
+            await write_app_log(app_number, f"   Закрыл: {interaction.user}")
+            if self.reason.value:
+                await write_app_log(app_number, f"   Причина: {self.reason.value}")
+
+            log_channel = bot.log_channel
+            if log_channel:
+                log_content = await read_app_log(app_number)
+                if log_content.strip():
+                    temp_path = f"/tmp/application_{app_number:05d}.log"
+                    with open(temp_path, "w", encoding="utf-8") as f:
+                        f.write(log_content)
+                    try:
+                        await log_channel.send(
+                            f"📄 Лог заявки #{app_number:05d} (ЗАКРЫТА)",
+                            file=discord.File(temp_path, filename=f"application_{app_number:05d}.log")
+                        )
+                    except:
+                        pass
+                    os.remove(temp_path)
+            await delete_app_log(app_number)
+            if app_number in bot.app_open_time:
+                del bot.app_open_time[app_number]
+
+        await channel.delete()
+        await interaction.followup.send("✅ Заявка закрыта.", ephemeral=True)
+
+# ---------- Модальное окно заявки ----------
 class ApplicationModal(discord.ui.Modal, title='📝 Заявка в группировку'):
     group_name = discord.ui.TextInput(
         label='Название группировки',
-        placeholder='Введите точное название из списка (см. описание)',
+        placeholder='Введите точное название из списка',
         required=True,
         max_length=50
     )
@@ -130,10 +202,8 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 await interaction.followup.send("❌ Название группировки не может быть пустым.", ephemeral=True)
                 return
 
-            # Проверка, что группировка есть в списке (без учёта регистра)
             group_lower = group_raw.lower()
             if group_lower not in VALID_GROUPS_LOWER:
-                # Формируем красивый список группировок для вывода
                 groups_list = "\n".join(VALID_GROUPS)
                 await interaction.followup.send(
                     f"❌ Группировка **{group_raw}** не найдена.\n\n"
@@ -142,18 +212,12 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 )
                 return
 
-            # Получаем оригинальное написание группировки
-            group = GROUP_MAP[group_lower]
-
+            group = VALID_GROUPS_LOWER[group_lower]
             guild = interaction.guild
             category = bot.category
 
-            if category is None:
-                await interaction.followup.send("❌ Категория не найдена. Проверьте ID категории в коде.", ephemeral=True)
-                return
-
-            if not isinstance(category, discord.CategoryChannel):
-                await interaction.followup.send("❌ Указанный ID не является категорией.", ephemeral=True)
+            if category is None or not isinstance(category, discord.CategoryChannel):
+                await interaction.followup.send("❌ Категория не найдена или указан неверный ID.", ephemeral=True)
                 return
 
             existing = discord.utils.get(category.channels, topic=str(interaction.user.id))
@@ -161,13 +225,14 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 await interaction.followup.send(f"⚠️ У вас уже есть заявка: {existing.mention}", ephemeral=True)
                 return
 
+            # Проверяем роли поддержки
             support_roles = []
             for role_id in ALL_SUPPORT_ROLE_IDS:
                 role = guild.get_role(role_id)
                 if role:
                     support_roles.append(role)
             if not support_roles:
-                await interaction.followup.send("❌ Ни одна из ролей поддержки не найдена. Проверьте ID ролей в коде.", ephemeral=True)
+                await interaction.followup.send("❌ Ни одна из ролей поддержки не найдена.", ephemeral=True)
                 return
 
             async with counter_lock:
@@ -176,12 +241,31 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 save_counter(counter)
 
             channel_name = f"заявка-{interaction.user.name.lower()}-{current_number}"
+
+            # Права доступа
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
             }
+
+            # Добавляем роли поддержки
             for role in support_roles:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+            # Добавляем роль группировки (только чтение)
+            group_role_id = GROUP_ROLE_IDS.get(group)
+            if group_role_id:
+                group_role = guild.get_role(group_role_id)
+                if group_role:
+                    overwrites[group_role] = discord.PermissionOverwrite(view_channel=True, send_messages=False)
+
+            # Добавляем роли лидера и зама (чтение + отправка)
+            leader_role = guild.get_role(LEADER_ROLE_ID)
+            if leader_role:
+                overwrites[leader_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            deputy_role = guild.get_role(DEPUTY_ROLE_ID)
+            if deputy_role:
+                overwrites[deputy_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
             channel = await guild.create_text_channel(
                 name=channel_name,
@@ -217,9 +301,10 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             )
             await channel.send(instruction)
 
+            # Новая кнопка закрытия с подтверждением
             close_view = discord.ui.View()
             close_view.add_item(CloseApplicationButton())
-            await channel.send("🔒 Кнопка закрытия заявки (только для администрации):", view=close_view)
+            await channel.send("🔒 Кнопка закрытия заявки (доступна создателю и администрации):", view=close_view)
 
             log_channel = bot.log_channel
             if log_channel:
@@ -268,57 +353,15 @@ class ApplyButton(discord.ui.Button):
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
 
-# ---------- Кнопка закрытия ----------
+# ---------- Кнопка закрытия с подтверждением ----------
 class CloseApplicationButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Закрыть заявку", style=discord.ButtonStyle.danger, custom_id="close_application")
 
     async def callback(self, interaction: discord.Interaction):
-        has_support_role = False
-        for role_id in ALL_SUPPORT_ROLE_IDS:
-            if interaction.user.get_role(role_id):
-                has_support_role = True
-                break
-        if not has_support_role:
-            await interaction.response.send_message("⛔ У вас нет прав на закрытие заявок.", ephemeral=True)
-            return
-
-        channel = interaction.channel
-        if not channel.category or channel.category.id != CATEGORY_ID:
-            await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
-            return
-
-        await interaction.response.send_message("⏳ Заявка закрывается...", ephemeral=True)
-
-        try:
-            app_number = int(channel.name.split('-')[-1])
-        except:
-            app_number = None
-
-        if app_number:
-            await write_app_log(app_number, f"🔴 ЗАЯВКА ЗАКРЫТА")
-            await write_app_log(app_number, f"   Закрыл: {interaction.user}")
-
-            log_channel = bot.log_channel
-            if log_channel:
-                log_content = await read_app_log(app_number)
-                if log_content.strip():
-                    temp_path = f"/tmp/application_{app_number:05d}.log"
-                    with open(temp_path, "w", encoding="utf-8") as f:
-                        f.write(log_content)
-                    try:
-                        await log_channel.send(
-                            f"📄 Лог заявки #{app_number:05d} (ЗАКРЫТА)",
-                            file=discord.File(temp_path, filename=f"application_{app_number:05d}.log")
-                        )
-                    except:
-                        pass
-                    os.remove(temp_path)
-            await delete_app_log(app_number)
-            if app_number in bot.app_open_time:
-                del bot.app_open_time[app_number]
-
-        await channel.delete()
+        # Открываем модальное окно подтверждения
+        modal = ConfirmCloseModal()
+        await interaction.response.send_modal(modal)
 
 # ---------- Представление с кнопкой ----------
 class ApplicationView(discord.ui.View):
@@ -330,7 +373,6 @@ class ApplicationView(discord.ui.View):
 @bot.tree.command(name="setup", description="Создать сообщение с кнопкой для подачи заявок")
 @app_commands.default_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
-    # В embed выводим список группировок, чтобы пользователи знали
     groups_text = "\n".join(VALID_GROUPS)
     embed = discord.Embed(
         title="📋 Подача заявки в группировку",
@@ -343,19 +385,28 @@ async def setup(interaction: discord.Interaction):
     view = ApplicationView()
     await interaction.response.send_message(embed=embed, view=view)
 
-@bot.tree.command(name="close", description="Закрыть текущий канал заявки")
+@bot.tree.command(name="close", description="Быстро закрыть текущий канал заявки (без подтверждения)")
 async def close_application(interaction: discord.Interaction):
+    # Этот метод оставлен для администраторов, если нужно быстро закрыть без подтверждения
+    # Но лучше использовать кнопку с подтверждением
     channel = interaction.channel
     if not channel.category or channel.category.id != CATEGORY_ID:
         await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
         return
+
+    creator_id = channel.topic
+    if creator_id is None:
+        await interaction.response.send_message("❌ Не удалось определить создателя.", ephemeral=True)
+        return
+    creator_id = int(creator_id)
 
     has_support_role = False
     for role_id in ALL_SUPPORT_ROLE_IDS:
         if interaction.user.get_role(role_id):
             has_support_role = True
             break
-    if not has_support_role:
+
+    if interaction.user.id != creator_id and not has_support_role:
         await interaction.response.send_message("⛔ У вас нет прав.", ephemeral=True)
         return
 
@@ -415,7 +466,7 @@ async def on_message(message):
     await write_app_log(app_number, f"💬 {message.author}: {message.content}")
     await bot.process_commands(message)
 
-# ---------- Веб-сервер для health check ----------
+# ---------- Веб-сервер ----------
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
@@ -441,11 +492,8 @@ async def on_ready():
         return
 
     category_obj = guild.get_channel(CATEGORY_ID)
-    if category_obj is None:
-        print(f"❌ Категория с ID {CATEGORY_ID} не найдена.")
-        bot.category = None
-    elif not isinstance(category_obj, discord.CategoryChannel):
-        print(f"❌ Объект с ID {CATEGORY_ID} не является категорией (это {type(category_obj).__name__}). Проверьте CATEGORY_ID.")
+    if category_obj is None or not isinstance(category_obj, discord.CategoryChannel):
+        print(f"❌ Категория {CATEGORY_ID} не найдена или не является категорией.")
         bot.category = None
     else:
         bot.category = category_obj
@@ -458,9 +506,17 @@ async def on_ready():
     for role_id in ALL_SUPPORT_ROLE_IDS:
         role = guild.get_role(role_id)
         if role:
-            print(f"✅ Роль {role.name} (ID: {role_id}) найдена.")
+            print(f"✅ Роль поддержки {role.name} (ID: {role_id}) найдена.")
         else:
-            print(f"⚠️ Роль с ID {role_id} не найдена.")
+            print(f"⚠️ Роль поддержки с ID {role_id} не найдена.")
+
+    # Проверяем роли группировок
+    for group, role_id in GROUP_ROLE_IDS.items():
+        role = guild.get_role(role_id)
+        if role:
+            print(f"✅ Роль {group} (ID: {role_id}) найдена.")
+        else:
+            print(f"⚠️ Роль {group} с ID {role_id} не найдена.")
 
     if bot.category is None:
         print("⚠️ Бот запущен, но заявки не будут работать до исправления CATEGORY_ID.")
