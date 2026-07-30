@@ -18,20 +18,18 @@ def get_int_env(var_name: str, default: int = 0) -> int:
     value = value.strip()
     if value.isdigit():
         return int(value)
-    # Если строка содержит не только цифры (например, 'ID_роли_администратора'), возвращаем default
     return default
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 CATEGORY_ID = get_int_env('CATEGORY_ID')
 ADMIN_ROLE_ID = get_int_env('ADMIN_ROLE_ID')
-# LOG_CHANNEL_ID теперь жёстко задан в коде
-LOG_CHANNEL_ID = 1532376168173404170
+LOG_CHANNEL_ID = 1532376168173404170  # захардкожен
 
 if not TOKEN or CATEGORY_ID == 0:
     print("❌ Ошибка: не заданы DISCORD_TOKEN и CATEGORY_ID")
     sys.exit(1)
 
-# ---------- Счётчик заявок ----------
+# ---------- Счётчик ----------
 COUNTER_FILE = "data/counter.txt"
 os.makedirs("data", exist_ok=True)
 
@@ -148,7 +146,6 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
         close_view.add_item(CloseApplicationButton())
         await channel.send("🔒 Кнопка закрытия заявки (только для администрации):", view=close_view)
 
-        # Логирование
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             log_embed = discord.Embed(
@@ -198,8 +195,8 @@ class ApplicationView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(GroupButton())
 
-# ---------- Команды ----------
-@bot.tree.command(name="setup", description="Создать сообщение с кнопкой")
+# ---------- Команды (слэш) ----------
+@bot.tree.command(name="setup", description="Создать сообщение с кнопкой для подачи заявок")
 @app_commands.default_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -208,6 +205,70 @@ async def setup(interaction: discord.Interaction):
         color=discord.Color.blue()
     )
     await interaction.response.send_message(embed=embed, view=ApplicationView())
+
+@bot.tree.command(name="close", description="Закрыть текущий канал заявки")
+async def close_application(interaction: discord.Interaction):
+    channel = interaction.channel
+    if not channel.category or channel.category.id != CATEGORY_ID:
+        await interaction.response.send_message("❌ Это не канал заявки.", ephemeral=True)
+        return
+    # Проверка прав администратора
+    if ADMIN_ROLE_ID != 0:
+        role = interaction.guild.get_role(ADMIN_ROLE_ID)
+        if not role or role not in interaction.user.roles:
+            await interaction.response.send_message("⛔ У вас нет прав на закрытие заявок.", ephemeral=True)
+            return
+    await interaction.response.send_message("⏳ Закрытие...", ephemeral=True)
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    if log_channel:
+        await log_channel.send(f"🔒 Заявка #{channel.name} закрыта {interaction.user.mention}")
+    await channel.delete()
+
+@bot.tree.command(name="list_applications", description="Показать все открытые заявки")
+@app_commands.default_permissions(administrator=True)
+async def list_applications(interaction: discord.Interaction):
+    category = bot.get_channel(CATEGORY_ID)
+    if not category:
+        await interaction.response.send_message("❌ Категория не найдена.", ephemeral=True)
+        return
+    channels = [ch for ch in category.channels if isinstance(ch, discord.TextChannel) and ch.name.startswith("заявка-")]
+    if not channels:
+        await interaction.response.send_message("📭 Открытых заявок нет.", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title=f"📋 Открытые заявки ({len(channels)})",
+        color=discord.Color.blue()
+    )
+    for ch in channels:
+        # Получаем создателя из topic
+        creator_id = ch.topic
+        if creator_id and creator_id.isdigit():
+            user = interaction.guild.get_member(int(creator_id))
+            user_mention = user.mention if user else f"ID:{creator_id}"
+        else:
+            user_mention = "Неизвестно"
+        embed.add_field(name=ch.name, value=f"Канал: {ch.mention}\nСоздатель: {user_mention}", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="stats", description="Показать статистику по заявкам")
+@app_commands.default_permissions(administrator=True)
+async def stats(interaction: discord.Interaction):
+    category = bot.get_channel(CATEGORY_ID)
+    if not category:
+        await interaction.response.send_message("❌ Категория не найдена.", ephemeral=True)
+        return
+    total = counter - 1  # counter уже инкрементирован, но хранит следующее значение
+    channels = [ch for ch in category.channels if isinstance(ch, discord.TextChannel) and ch.name.startswith("заявка-")]
+    open_count = len(channels)
+    closed_count = total - open_count
+    embed = discord.Embed(
+        title="📊 Статистика заявок",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Всего подано", value=str(total), inline=True)
+    embed.add_field(name="Открыто", value=str(open_count), inline=True)
+    embed.add_field(name="Закрыто", value=str(closed_count), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ---------- Веб-сервер ----------
 async def health_check(request):
