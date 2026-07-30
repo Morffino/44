@@ -13,9 +13,12 @@ load_dotenv()
 # ---------- Конфигурация ----------
 TOKEN = os.getenv('DISCORD_TOKEN')
 CATEGORY_ID = int(os.getenv('CATEGORY_ID', 0))
-LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', 0))
 ADMIN_ROLE_ID = int(os.getenv('ADMIN_ROLE_ID', 0))
 
+# --- Лог-канал задан напрямую ---
+LOG_CHANNEL_ID = 1532376168173404170
+
+# Проверка обязательных переменных
 if not TOKEN or CATEGORY_ID == 0:
     print("❌ Ошибка: не заданы DISCORD_TOKEN и CATEGORY_ID")
     sys.exit(1)
@@ -87,25 +90,21 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             await interaction.response.send_message("❌ Категория не найдена. Обратитесь к администратору.", ephemeral=True)
             return
 
-        # Проверка на существующий канал
         existing = discord.utils.get(category.channels, topic=str(interaction.user.id))
         if existing:
             await interaction.response.send_message(f"⚠️ У вас уже есть открытая заявка: {existing.mention}", ephemeral=True)
             return
 
-        # Получаем номер заявки
         async with counter_lock:
             current_number = counter
             counter += 1
             save_counter(counter)
 
-        # Создаём канал
         channel_name = f"заявка-{interaction.user.name.lower()}-{current_number}"
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
-        # Если есть роль администратора, добавляем её
         if ADMIN_ROLE_ID != 0:
             role = guild.get_role(ADMIN_ROLE_ID)
             if role:
@@ -122,7 +121,6 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             await interaction.response.send_message(f"❌ Ошибка создания канала: {e}", ephemeral=True)
             return
 
-        # Формируем embed с анкетой
         embed = discord.Embed(
             title=f"📋 Заявка #{current_number}",
             color=discord.Color.green(),
@@ -138,12 +136,11 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
 
         await channel.send(embed=embed)
 
-        # Кнопка закрытия заявки (только для админов)
         close_view = discord.ui.View()
         close_view.add_item(CloseApplicationButton())
         await channel.send("🔒 Кнопка закрытия заявки (только для администрации):", view=close_view)
 
-        # Логирование
+        # --- Логирование в указанный канал ---
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             log_embed = discord.Embed(
@@ -170,13 +167,12 @@ class GroupButton(discord.ui.Button):
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
 
-# ---------- Кнопка закрытия заявки (только админы) ----------
+# ---------- Кнопка закрытия заявки ----------
 class CloseApplicationButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Закрыть заявку", style=discord.ButtonStyle.danger, custom_id="close_application")
 
     async def callback(self, interaction: discord.Interaction):
-        # Проверка на админа
         if ADMIN_ROLE_ID != 0:
             role = interaction.guild.get_role(ADMIN_ROLE_ID)
             if not role or role not in interaction.user.roles:
@@ -190,7 +186,6 @@ class CloseApplicationButton(discord.ui.Button):
 
         await interaction.response.send_message("⏳ Заявка закрывается...", ephemeral=True)
 
-        # Логирование закрытия
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(f"🔒 Заявка #{channel.name} закрыта администратором {interaction.user.mention}")
