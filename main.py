@@ -12,21 +12,22 @@ load_dotenv()
 
 # ---------- Конфигурация ----------
 TOKEN = os.getenv('DISCORD_TOKEN')
-CATEGORY_ID = int(os.getenv('CATEGORY_ID', 0))
-LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', 1532376168173404170))
 GUILD_ID = int(os.getenv('GUILD_ID', 0))
 
-SUPPORT_ROLE_ID = int(os.getenv('SUPPORT_ROLE_ID', 0))
-ADDITIONAL_SUPPORT_ROLE_IDS = [
+# --- Жёстко заданные ID (не нужны в .env) ---
+CATEGORY_ID = 1529178033100165324   # категория для каналов заявок
+LOG_CHANNEL_ID = 1532376168173404170  # канал для логов
+
+# Роли, которые могут закрывать заявки (захардкожены)
+ALL_SUPPORT_ROLE_IDS = [
     1529252048883810485,
     1529253808666841302,
     1529253952850366616,
     1529254103820275823
 ]
-ALL_SUPPORT_ROLE_IDS = [SUPPORT_ROLE_ID] + ADDITIONAL_SUPPORT_ROLE_IDS if SUPPORT_ROLE_ID else ADDITIONAL_SUPPORT_ROLE_IDS
 
-if not TOKEN or CATEGORY_ID == 0:
-    print("❌ Ошибка: не заданы DISCORD_TOKEN и CATEGORY_ID")
+if not TOKEN:
+    print("❌ Ошибка: не задан DISCORD_TOKEN в .env")
     sys.exit(1)
 
 # ---------- Счётчик ----------
@@ -85,7 +86,7 @@ bot.category = None
 bot.log_channel = None
 bot.app_open_time = {}
 
-# ---------- Модальное окно с ОДНИМ полем + ОТЛАДКА ----------
+# ---------- Модальное окно с ОДНИМ полем ----------
 class ApplicationModal(discord.ui.Modal, title='📝 Заявка в группировку'):
     group_name = discord.ui.TextInput(
         label='Название группировки',
@@ -95,7 +96,6 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Мгновенный ответ (defer)
         await interaction.response.defer(ephemeral=True)
         asyncio.create_task(self._handle(interaction))
 
@@ -109,17 +109,20 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
 
             guild = interaction.guild
             category = bot.category
-            if not category:
-                await interaction.followup.send("❌ Категория не найдена. Проверьте ID категории в настройках.", ephemeral=True)
+
+            if category is None:
+                await interaction.followup.send("❌ Категория не найдена. Проверьте ID категории в коде.", ephemeral=True)
                 return
 
-            # Проверка существующей заявки
+            if not isinstance(category, discord.CategoryChannel):
+                await interaction.followup.send("❌ Указанный ID не является категорией.", ephemeral=True)
+                return
+
             existing = discord.utils.get(category.channels, topic=str(interaction.user.id))
             if existing:
                 await interaction.followup.send(f"⚠️ У вас уже есть заявка: {existing.mention}", ephemeral=True)
                 return
 
-            # Роли поддержки
             support_roles = []
             for role_id in ALL_SUPPORT_ROLE_IDS:
                 role = guild.get_role(role_id)
@@ -129,13 +132,11 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
                 await interaction.followup.send("❌ Ни одна из ролей поддержки не найдена. Проверьте ID ролей в коде.", ephemeral=True)
                 return
 
-            # Номер заявки
             async with counter_lock:
                 current_number = counter
                 counter += 1
                 save_counter(counter)
 
-            # Создаём канал
             channel_name = f"заявка-{interaction.user.name.lower()}-{current_number}"
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -153,12 +154,10 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
 
             bot.app_open_time[current_number] = datetime.now()
 
-            # Логируем открытие
             await write_app_log(current_number, f"🟢 ЗАЯВКА ОТКРЫТА")
             await write_app_log(current_number, f"   Пользователь: {interaction.user}")
             await write_app_log(current_number, f"   Группировка: {group}")
 
-            # Отправляем в канал информацию о группировке + просьбу дополнить
             embed = discord.Embed(
                 title=f"📋 Заявка #{current_number}",
                 color=discord.Color.green(),
@@ -166,10 +165,8 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             )
             embed.add_field(name="Группировка", value=group, inline=False)
             embed.set_footer(text=f"От: {interaction.user.display_name}")
-
             await channel.send(embed=embed)
 
-            # Сообщение с просьбой написать остальные пункты
             instruction = (
                 "**Теперь напишите в этом канале следующие пункты (каждый с новой строки):**\n"
                 "1. Ваш реальный возраст\n"
@@ -182,12 +179,10 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
             )
             await channel.send(instruction)
 
-            # Кнопка закрытия
             close_view = discord.ui.View()
             close_view.add_item(CloseApplicationButton())
             await channel.send("🔒 Кнопка закрытия заявки (только для администрации):", view=close_view)
 
-            # Уведомление в лог-канал
             log_channel = bot.log_channel
             if log_channel:
                 log_embed = discord.Embed(
@@ -207,20 +202,16 @@ class ApplicationModal(discord.ui.Modal, title='📝 Заявка в групп�
         except discord.HTTPException as e:
             await interaction.followup.send(f"❌ Ошибка Discord: {e.text if hasattr(e, 'text') else str(e)}", ephemeral=True)
         except Exception as e:
-            # Подробная ошибка для отладки
             await interaction.followup.send(f"❌ Ошибка: {type(e).__name__}: {str(e)}", ephemeral=True)
             print(f"Ошибка в _handle: {type(e).__name__}: {e}")
 
-    # --- Добавляем обработчик ошибок модального окна ---
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        """Перехватывает ошибки до вызова defer."""
         try:
             await interaction.response.send_message(
-                f"❌ Критическая ошибка в модальном окне: {type(error).__name__}: {error}",
+                f"❌ Критическая ошибка: {type(error).__name__}: {error}",
                 ephemeral=True
             )
         except:
-            # Если response уже отправлен, пробуем followup
             try:
                 await interaction.followup.send(
                     f"❌ Критическая ошибка: {type(error).__name__}: {error}",
@@ -356,7 +347,7 @@ async def close_application(interaction: discord.Interaction):
 
     await channel.delete()
 
-# ---------- Обработчик сообщений (логирование переписки) ----------
+# ---------- Обработчик сообщений ----------
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -381,7 +372,7 @@ async def on_message(message):
     await write_app_log(app_number, f"💬 {message.author}: {message.content}")
     await bot.process_commands(message)
 
-# ---------- Веб-сервер для health check ----------
+# ---------- Веб-сервер ----------
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
@@ -405,8 +396,21 @@ async def on_ready():
     if not guild:
         print("⚠️ Бот не на сервере.")
         return
-    bot.category = guild.get_channel(CATEGORY_ID)
+
+    category_obj = guild.get_channel(CATEGORY_ID)
+    if category_obj is None:
+        print(f"❌ Категория с ID {CATEGORY_ID} не найдена.")
+        bot.category = None
+    elif not isinstance(category_obj, discord.CategoryChannel):
+        print(f"❌ Объект с ID {CATEGORY_ID} не является категорией (это {type(category_obj).__name__}). Проверьте CATEGORY_ID.")
+        bot.category = None
+    else:
+        bot.category = category_obj
+        print(f"✅ Категория {category_obj.name} (ID: {CATEGORY_ID}) найдена.")
+
     bot.log_channel = guild.get_channel(LOG_CHANNEL_ID)
+    if not bot.log_channel:
+        print(f"⚠️ Лог-канал {LOG_CHANNEL_ID} не найден.")
 
     for role_id in ALL_SUPPORT_ROLE_IDS:
         role = guild.get_role(role_id)
@@ -415,10 +419,8 @@ async def on_ready():
         else:
             print(f"⚠️ Роль с ID {role_id} не найдена.")
 
-    if not bot.category:
-        print(f"⚠️ Категория {CATEGORY_ID} не найдена. Проверьте ID.")
-    if not bot.log_channel:
-        print(f"⚠️ Лог-канал {LOG_CHANNEL_ID} не найден.")
+    if bot.category is None:
+        print("⚠️ Бот запущен, но заявки не будут работать до исправления CATEGORY_ID.")
 
     try:
         if GUILD_ID:
